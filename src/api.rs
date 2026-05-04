@@ -198,6 +198,33 @@ impl OllamaClient {
         Ok(())
     }
 
+    /// `POST /api/generate` with `stream: false` — one completion for `prompt` using `model`.
+    ///
+    /// Returns Ollama’s JSON body (main text in [`GenerateResponse::response`]). Surfaces API
+    /// `error` strings as `Err`.
+    pub fn generate(&self, model: &str, prompt: &str) -> Result<GenerateResponse, String> {
+        let resp = self
+            .agent
+            .post(&self.url("/api/generate"))
+            .send_json(GenerateHttpRequest {
+                model: model.to_string(),
+                prompt: prompt.to_string(),
+                stream: false,
+            })
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        let body = resp.into_string().map_err(|e| e.to_string())?;
+        if !(200..300).contains(&status) {
+            return Err(format!("ollama returned HTTP {status}: {body}"));
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("invalid JSON from ollama: {e}"))?;
+        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+            return Err(err.to_string());
+        }
+        serde_json::from_value(v).map_err(|e| format!("generate response: {e}"))
+    }
+
     /// Re-pull every installed tag (same idea as `update_all_models.sh` in the blog).
     pub fn update_all_models<F>(&self, mut on_pull: F) -> Result<Vec<String>, String>
     where
@@ -352,6 +379,37 @@ struct GenerateUnloadRequest {
     keep_alive: u32,
 }
 
+#[derive(Serialize)]
+struct GenerateHttpRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+}
+
+/// Successful body from Ollama `POST /api/generate` when `stream` is `false`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GenerateResponse {
+    pub model: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    pub response: String,
+    pub done: bool,
+    #[serde(default)]
+    pub context: Option<Vec<i64>>,
+    #[serde(default)]
+    pub total_duration: Option<u64>,
+    #[serde(default)]
+    pub load_duration: Option<u64>,
+    #[serde(default)]
+    pub prompt_eval_count: Option<u64>,
+    #[serde(default)]
+    pub prompt_eval_duration: Option<u64>,
+    #[serde(default)]
+    pub eval_count: Option<u64>,
+    #[serde(default)]
+    pub eval_duration: Option<u64>,
+}
+
 // --- Responses ---
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -452,5 +510,13 @@ mod tests {
             split_modelfile_from("FROM gemma3:latest\nSYSTEM \"x\"\n").unwrap();
         assert_eq!(base, "gemma3:latest");
         assert_eq!(rest.as_deref(), Some("SYSTEM \"x\"\n"));
+    }
+
+    #[test]
+    fn generate_response_deserializes_ollama_shape() {
+        let s = r#"{"model":"llama3.2:latest","created_at":"2024-01-01T00:00:00Z","response":"Hello","done":true}"#;
+        let r: GenerateResponse = serde_json::from_str(s).unwrap();
+        assert_eq!(r.response, "Hello");
+        assert!(r.done);
     }
 }

@@ -6,8 +6,8 @@ pub mod api;
 pub mod config;
 
 pub use api::{
-    ollama_base_url, split_modelfile_from, ListedModel, ModelTagDetails, OllamaClient, PullProgressLine,
-    PsResponse, RunningModel, ShowResponse, TagsResponse, DEFAULT_OLLAMA_PORT,
+    ollama_base_url, split_modelfile_from, GenerateResponse, ListedModel, ModelTagDetails, OllamaClient,
+    PullProgressLine, PsResponse, RunningModel, ShowResponse, TagsResponse, DEFAULT_OLLAMA_PORT,
 };
 
 pub use config::{
