@@ -287,6 +287,53 @@ impl OllamaClient {
             on_line(&v)
         })
     }
+
+    /// `POST /api/chat` with `stream: true` — calls `on_line` for each NDJSON chunk.
+    pub fn chat_stream<F>(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        temperature: Option<f64>,
+        max_tokens: Option<i32>,
+        on_line: F,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&OllamaChatLine) -> Result<(), String>,
+    {
+        let options = build_chat_options(temperature, max_tokens);
+        self.stream_post_json(
+            "/api/chat",
+            &OllamaChatHttpRequest { model: model.to_string(), messages, stream: true, options },
+            on_line,
+        )
+    }
+
+    /// `POST /api/chat` with `stream: false` — returns the single complete response.
+    pub fn chat_blocking(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        temperature: Option<f64>,
+        max_tokens: Option<i32>,
+    ) -> Result<OllamaChatLine, String> {
+        let options = build_chat_options(temperature, max_tokens);
+        let resp = self
+            .agent
+            .post(&self.url("/api/chat"))
+            .send_json(OllamaChatHttpRequest { model: model.to_string(), messages, stream: false, options })
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        let body = resp.into_string().map_err(|e| e.to_string())?;
+        if !(200..300).contains(&status) {
+            return Err(format!("ollama returned HTTP {status}: {body}"));
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("invalid JSON from ollama: {e}"))?;
+        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+            return Err(err.to_string());
+        }
+        serde_json::from_value(v).map_err(|e| format!("chat response: {e}"))
+    }
 }
 
 fn read_ndjson_lines<R: std::io::Read, F>(reader: R, mut on_line: F) -> Result<(), String>
@@ -384,6 +431,56 @@ struct GenerateHttpRequest {
     model: String,
     prompt: String,
     stream: bool,
+}
+
+#[derive(Serialize)]
+struct OllamaChatHttpRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<OllamaChatOptions>,
+}
+
+#[derive(Serialize)]
+struct OllamaChatOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_predict: Option<i32>,
+}
+
+fn build_chat_options(temperature: Option<f64>, max_tokens: Option<i32>) -> Option<OllamaChatOptions> {
+    if temperature.is_some() || max_tokens.is_some() {
+        Some(OllamaChatOptions { temperature, num_predict: max_tokens })
+    } else {
+        None
+    }
+}
+
+/// Chat message — role (`user`, `assistant`, `system`) plus text content.
+/// Used in both the `/api/chat` request body and each streaming response chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// One NDJSON line from Ollama `POST /api/chat`.
+/// When `done` is `false`, `message` contains the next token chunk.
+/// When `done` is `true`, the token stats fields are populated.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OllamaChatLine {
+    pub model: String,
+    pub created_at: String,
+    pub message: Option<ChatMessage>,
+    pub done: bool,
+    #[serde(default)]
+    pub done_reason: Option<String>,
+    #[serde(default)]
+    pub prompt_eval_count: Option<u64>,
+    #[serde(default)]
+    pub eval_count: Option<u64>,
 }
 
 /// Successful body from Ollama `POST /api/generate` when `stream` is `false`.
